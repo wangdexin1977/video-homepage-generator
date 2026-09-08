@@ -265,7 +265,11 @@ def main():
               f"结尾首页 {durations[-1]:.2f}s")
     if len(args.bg) > 1:
         print("[info] 播放顺序：" + " → ".join(str(i + 1) for i in range(len(args.bg))) + " → 1（回到首页）")
-    inputs = ["-f", "concat", "-safe", "0", "-i", sequence_file]
+    if len(args.bg) == 1:
+        # 单图必须持续供帧；若仍走 ffconcat，稀疏的静态帧会让 -shortest 提前结束视频。
+        inputs = ["-loop", "1", "-framerate", str(args.fps), "-i", args.bg[0]]
+    else:
+        inputs = ["-f", "concat", "-safe", "0", "-i", sequence_file]
     for p, _ in subs:
         inputs += ["-i", p]
     audio_idx = len(subs) + 1
