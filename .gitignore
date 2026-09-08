@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.log
+
+# 用户上传内容与生成的视频，不进入代码仓库
+jobs/*
+!jobs/.gitkeep
+
+# 本地界面验收截图
+verify/
+
+# 本地虚拟环境
+.venv/
+venv/
