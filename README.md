@@ -45,8 +45,8 @@ cd /Users/wdx/.qclaw/workspace-fe999qyxxozphvfm/homepage_webui
 | 主标题 | 红黄双色，前半黄 #FFD700 + 后半红 #E60012，字号自适应（≈屏宽 92%），中心 y=0.44H；**可留空：留空则不加任何文字，直接使用原图（图片自带文字）** |
 | 副标题 | 52px 白字 + 黑描边 + 半透明黑底条，位置 y=0.70H，≤100 字，超 3 行自动缩小至 28px |
 | 字幕 | 默认开启；30px 黄字（可换白/青/橙）+ 黑描边 6px；位于副标题底条下方 56px 自动避让；无副标题时距底边 110px |
-| 对齐算法 | silencedetect(-38dB, d=0.15) 检出全部停顿 → 取最长 n-1 个作句边界 → 帧对齐（round(t×25)/25），零累积误差 |
-| 视频编码 | libx264 veryfast crf20 + aac 192k + faststart，25fps |
+| 对齐算法 | silencedetect(-38dB, d=0.15) 检出全部停顿 → 取最长 n-1 个作句边界 → 自适应帧率对齐，零累积误差 |
+| 视频编码 | macOS 默认使用 VideoToolbox + AudioToolbox；不可用时自动回退 libx264 ultrafast + AAC；单图无字幕 1fps、多图无字幕 5–25fps、有字幕 10fps |
 
 ## 核心接口
 

@@ -8,7 +8,7 @@
   2. 自适应对齐：取时长最长的 (句数-1) 个停顿作为句边界 → 每句绝对时间戳 [t0,t1]
   3. PIL 把每句字幕预渲染为透明 PNG（黄字+黑描边+阴影，任意样式）
   4. 单命令 ffmpeg：背景图 + 逐句字幕 PNG 链式 overlay enable='between(t,t0,t1)' + 音频
-     → 字幕按帧渲染（25fps，误差 ≤ 1 帧 / 40ms），零累积误差
+     → 字幕按帧渲染（自动 10fps，误差 ≤ 1 帧 / 100ms），零累积误差
 
 字幕排版规则（v4）：
   - --no-subtitle：完全不加字幕（只合成背景图+音频）
@@ -177,7 +177,8 @@ def main():
                     help="副标题底条底部 y（有副标题时字幕放在其下方 14px，防重叠）")
     ap.add_argument("--font-size", type=int, default=30, help="字幕字号（默认30，小于副标题52）")
     ap.add_argument("--font-color", default="0xFFD700")
-    ap.add_argument("--fps", type=int, default=25)
+    ap.add_argument("--fps", type=int, default=0,
+                    help="输出帧率；0=自动（单图无字幕1fps、多图无字幕5fps、有字幕10fps）")
     ap.add_argument("--noise", default=None)
     ap.add_argument("--gap", type=float, default=None)
     ap.add_argument("--margin-x", type=int, default=120)
@@ -257,6 +258,16 @@ def main():
     # ---------- 3. 图片时间线 + 单命令合成 ----------
     sequence_file = os.path.join(os.path.dirname(os.path.abspath(args.out)), "image_sequence.ffconcat")
     sequence, durations = build_image_sequence(args.bg, total, sequence_file)
+    if args.fps > 0:
+        output_fps = args.fps
+    elif not args.no_subtitle:
+        output_fps = 10
+    elif len(args.bg) == 1:
+        output_fps = 1
+    else:
+        # 多图至少 5fps；短播放段自动提高帧率，尽量保证每张图片都能出现。
+        shortest_segment = min(durations)
+        output_fps = min(25, max(5, int(1 / shortest_segment) + 1))
     if len(args.bg) == 1:
         print(f"[info] 单图模式：首页覆盖整段音频 {durations[0]:.2f}s")
     else:
@@ -265,21 +276,29 @@ def main():
               f"结尾首页 {durations[-1]:.2f}s")
     if len(args.bg) > 1:
         print("[info] 播放顺序：" + " → ".join(str(i + 1) for i in range(len(args.bg))) + " → 1（回到首页）")
+    print(f"[info] 性能模式：{output_fps}fps（静态图片自适应帧率）")
     if len(args.bg) == 1:
-        # 单图必须持续供帧；若仍走 ffconcat，稀疏的静态帧会让 -shortest 提前结束视频。
-        inputs = ["-loop", "1", "-framerate", str(args.fps), "-i", args.bg[0]]
+        # 图片只解码一次，再由滤镜循环供帧；避免长音频反复解码同一张 PNG/JPEG。
+        inputs = ["-i", args.bg[0]]
     else:
         inputs = ["-f", "concat", "-safe", "0", "-i", sequence_file]
     for p, _ in subs:
         inputs += ["-i", p]
     audio_idx = len(subs) + 1
     fc_parts = []
-    prev = "0:v"
+    if len(args.bg) == 1:
+        fc_parts.append(
+            f"[0:v]loop=loop=-1:size=1:start=0,trim=duration={total:.6f},"
+            f"setpts=N/({output_fps}*TB)[base]"
+        )
+        prev = "base"
+    else:
+        prev = "0:v"
     if not subs:
-        fc_parts.append("[0:v]format=yuv420p[v]")
+        fc_parts.append(f"[{prev}]format=yuv420p[v]")
     else:
         for i, ((t0, t1), (p, hh)) in enumerate(zip(bounds, subs)):
-            a, b = frame_align(t0, args.fps), frame_align(t1, args.fps)
+            a, b = frame_align(t0, output_fps), frame_align(t1, output_fps)
             out = "v" if i == len(subs) - 1 else f"s{i}"
             if y_base is not None:
                 y_expr = str(y_base)  # 顶部对齐（副标题下方）
@@ -293,15 +312,30 @@ def main():
         fc_parts.append(f"[{prev}]format=yuv420p[v]")
     fc = ";".join(fc_parts)
 
-    cmd = [FFMPEG, "-y"] + inputs + ["-i", args.audio,
-           "-filter_complex", fc,
-           "-map", "[v]", "-map", f"{audio_idx}:a",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
-           "-r", str(args.fps), "-shortest", "-t", f"{total:.6f}",
-           "-movflags", "+faststart", args.out]
+    common = [FFMPEG, "-y"] + inputs + ["-i", args.audio,
+              "-filter_complex", fc,
+              "-map", "[v]", "-map", f"{audio_idx}:a"]
+    tail = ["-r", str(output_fps), "-shortest", "-t", f"{total:.6f}",
+            "-movflags", "+faststart", args.out]
+    if sys.platform == "darwin":
+        video_codec = ["-c:v", "h264_videotoolbox", "-profile:v", "high", "-q:v", "65",
+                       "-realtime", "true", "-prio_speed", "1"]
+        audio_codec = ["-c:a", "aac_at", "-b:a", "192k", "-aac_at_quality", "0",
+                       "-ar", "44100", "-ac", "2"]
+        encoder_name = "Apple VideoToolbox + AudioToolbox"
+    else:
+        video_codec = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "21"]
+        audio_codec = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
+        encoder_name = "libx264 + AAC"
+    cmd = common + video_codec + audio_codec + tail
+    print(f"[info] 加速编码：{encoder_name}")
     print("[info] 单命令合成中...")
     r = run(cmd)
+    if r.returncode != 0 and sys.platform == "darwin":
+        print("[warn] Apple 编码器当前不可用，自动回退到通用快速编码器")
+        fallback_video = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "21"]
+        fallback_audio = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
+        r = run(common + fallback_video + fallback_audio + tail)
     if r.returncode != 0:
         print(r.stderr[-2000:])
         sys.exit(1)
@@ -310,7 +344,7 @@ def main():
     if subs:
         print("[同步表] 句号 起始~结束(帧对齐) 文字")
         for i, ((t0, t1), text) in enumerate(zip(bounds, lines)):
-            a, b = frame_align(t0, args.fps), frame_align(t1, args.fps)
+            a, b = frame_align(t0, output_fps), frame_align(t1, output_fps)
             print(f"  {i + 1:02d} {a:7.2f}s~{b:7.2f}s  {text[:32]}")
     else:
         print("[同步表] 字幕未启用")
