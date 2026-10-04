@@ -158,23 +158,11 @@ def process_job(job_id, audio_path, img_paths, script_path, form, output_stem="v
 
         # 2. 统一处理图片序列：第 1 张是首页，后续图片不重复叠加首页标题
         log(job_id, f"[2/4] 处理图片序列（共 {len(img_paths)} 张；第 1 张为首页）...")
-        size_mode = form.get("size_mode", "manual")
         with Image.open(img_paths[0]) as first_image:
             first_image = ImageOps.exif_transpose(first_image)
             source_w, source_h = first_image.size
-        if size_mode == "auto":
-            # libx264 + yuv420p 要求宽高为偶数；奇数尺寸只补 1 像素。
-            w = source_w + source_w % 2
-            h = source_h + source_h % 2
-            orientation = "横屏" if w > h else "竖屏" if h > w else "方形"
-            log(job_id, f"自动尺寸：首图 {source_w}x{source_h} → 输出 {w}x{h}（{orientation}）")
-            if (w, h) != (source_w, source_h):
-                log(job_id, "[warn] 首图存在奇数边长，为兼容 H.264 编码已将对应边长补 1 像素")
-        else:
-            w = int(form.get("width", 1920))
-            h = int(form.get("height", 1080))
-            orientation = "横屏" if w > h else "竖屏" if h > w else "方形"
-            log(job_id, f"手动尺寸：输出 {w}x{h}（{orientation}）")
+        w, h, orientation = 1920, 1080, "横屏"
+        log(job_id, f"固定横屏尺寸：首图 {source_w}x{source_h} → 输出 {w}x{h}（1080p）")
         mode = form.get("bg_mode", "fit-blur")  # fit-blur: 整图完整呈现，模糊延展铺底
         split = form.get("split_text", "").strip()
         subtitle = form.get("subtitle", "").strip()
@@ -182,9 +170,14 @@ def process_job(job_id, audio_path, img_paths, script_path, form, output_stem="v
         for index, img_path in enumerate(img_paths):
             is_homepage = index == 0
             frame_out = os.path.join(wd, "homepage.png" if is_homepage else f"frame_{index + 1:02d}.png")
+            with Image.open(img_path) as source_image:
+                source_image = ImageOps.exif_transpose(source_image)
+                image_mode = "fit-blur" if source_image.height > source_image.width else mode
             bg_cmd = [sys.executable, BG_SCRIPT, "--bg", img_path,
                       "--out", frame_out, "--width", str(w), "--height", str(h),
-                      "--mode", mode]
+                      "--mode", image_mode]
+            if image_mode != mode:
+                log(job_id, "[info] 竖图完整放入横屏画布，背景使用模糊延展")
             if is_homepage:
                 bg_cmd += ["--shadow", "--dim", "0.3", "--stroke", "8"]
                 if theme:
@@ -251,7 +244,7 @@ def process_job(job_id, audio_path, img_paths, script_path, form, output_stem="v
             "source_image_name": output_stem,
             "subtitle_enabled": not no_sub,
             "image_count": len(img_paths),
-            "sequence_count": len(img_paths) + (1 if len(img_paths) > 1 else 0),
+            "sequence_count": len(img_paths),
             "source_width": source_w,
             "source_height": source_h,
             "output_width": w,
@@ -473,6 +466,6 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
-    cleanup_old_jobs()
+    # 启动时保留历史任务、用户素材与成品；不自动按时间删除。
     print(f"视频首页 MP4 生成器：http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, threaded=True, debug=False)

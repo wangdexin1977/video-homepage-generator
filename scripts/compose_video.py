@@ -104,19 +104,11 @@ def frame_align(t, fps):
 def build_image_sequence(backgrounds, total, out_path):
     """生成 ffconcat 图片时间线。
 
-    单图覆盖整段音频；多图按上传顺序播放，并自动追加第 1 张作为收尾首页。
-    多图时开头首页和结尾首页各自最多 3 秒，其余内容图均分剩余时长。
-    当音频较短、均分时长本来不足 3 秒时，所有播放段继续均分。
+    每张图片按上传顺序播放一次，平均分配完整音频时长。
     末尾重复一次最后文件是 ffconcat 让最后一个 duration 生效的要求，不会额外增加播放段。
     """
     sequence = list(backgrounds)
-    if len(sequence) == 1:
-        durations = [total]
-    else:
-        sequence.append(sequence[0])
-        homepage_duration = min(3.0, total / len(sequence))
-        content_duration = (total - homepage_duration * 2) / (len(sequence) - 2)
-        durations = [homepage_duration] + [content_duration] * (len(sequence) - 2) + [homepage_duration]
+    durations = [total / len(sequence)] * len(sequence)
 
     def quote(path):
         return os.path.abspath(path).replace("\\", "\\\\").replace("'", "\\'")
@@ -262,20 +254,17 @@ def main():
         output_fps = args.fps
     elif not args.no_subtitle:
         output_fps = 10
-    elif len(args.bg) == 1:
-        output_fps = 1
     else:
-        # 多图至少 5fps；短播放段自动提高帧率，尽量保证每张图片都能出现。
+        # 多图至少 5fps，让等分边界精确到约 0.2 秒；短段再提高帧率。
         shortest_segment = min(durations)
-        output_fps = min(25, max(5, int(1 / shortest_segment) + 1))
+        output_fps = min(25, max(5, int(1 / shortest_segment) + 1)) if len(args.bg) > 1 else 1
     if len(args.bg) == 1:
         print(f"[info] 单图模式：首页覆盖整段音频 {durations[0]:.2f}s")
     else:
         print(f"[info] 图片 {len(args.bg)} 张，播放段 {len(sequence)} 段；"
-              f"首页首段 {durations[0]:.2f}s，内容图每张 {durations[1]:.2f}s，"
-              f"结尾首页 {durations[-1]:.2f}s")
+              f"每张平均播放 {durations[0]:.2f}s")
     if len(args.bg) > 1:
-        print("[info] 播放顺序：" + " → ".join(str(i + 1) for i in range(len(args.bg))) + " → 1（回到首页）")
+        print("[info] 播放顺序：" + " → ".join(str(i + 1) for i in range(len(args.bg))))
     print(f"[info] 性能模式：{output_fps}fps（静态图片自适应帧率）")
     if len(args.bg) == 1:
         # 图片只解码一次，再由滤镜循环供帧；避免长音频反复解码同一张 PNG/JPEG。
@@ -293,7 +282,10 @@ def main():
         )
         prev = "base"
     else:
-        prev = "0:v"
+        # concat 的末帧只有起始时间戳；补齐末帧，避免 -shortest 提前截断音频。
+        fc_parts.append(f"[0:v]fps={output_fps},tpad=stop_mode=clone:stop_duration=2,"
+                        f"trim=duration={total:.6f}[base]")
+        prev = "base"
     if not subs:
         fc_parts.append(f"[{prev}]format=yuv420p[v]")
     else:
@@ -317,6 +309,7 @@ def main():
               "-map", "[v]", "-map", f"{audio_idx}:a"]
     tail = ["-r", str(output_fps), "-shortest", "-t", f"{total:.6f}",
             "-movflags", "+faststart", args.out]
+    print("[info] 按画质压缩，音频 192 kb/s；不限制 MP4 大小")
     if sys.platform == "darwin":
         video_codec = ["-c:v", "h264_videotoolbox", "-profile:v", "high", "-q:v", "65",
                        "-realtime", "true", "-prio_speed", "1"]
@@ -324,7 +317,7 @@ def main():
                        "-ar", "44100", "-ac", "2"]
         encoder_name = "Apple VideoToolbox + AudioToolbox"
     else:
-        video_codec = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "21"]
+        video_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
         audio_codec = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
         encoder_name = "libx264 + AAC"
     cmd = common + video_codec + audio_codec + tail
@@ -333,14 +326,16 @@ def main():
     r = run(cmd)
     if r.returncode != 0 and sys.platform == "darwin":
         print("[warn] Apple 编码器当前不可用，自动回退到通用快速编码器")
-        fallback_video = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "21"]
+        fallback_video = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
         fallback_audio = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"]
         r = run(common + fallback_video + fallback_audio + tail)
     if r.returncode != 0:
         print(r.stderr[-2000:])
+        if os.path.exists(args.out):
+            os.remove(args.out)
         sys.exit(1)
 
-    print(f"[ok] 输出 {args.out}")
+    print(f"[ok] 输出 {args.out}（{os.path.getsize(args.out) / 1_000_000:.1f} MB）")
     if subs:
         print("[同步表] 句号 起始~结束(帧对齐) 文字")
         for i, ((t0, t1), text) in enumerate(zip(bounds, lines)):

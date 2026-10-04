@@ -162,14 +162,6 @@
     position: absolute; top: 10px; right: 10px; width: 24px; height: 24px; border: 0; border-radius: 50%;
     background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; font-size: 17px; line-height: 22px;
   }
-  .loop-card {
-    width: 142px; flex: 0 0 142px; min-height: 112px; border: 1px dashed rgba(52,199,89,0.55);
-    border-radius: 13px; background: rgba(52,199,89,0.06); color: #248A3D;
-    display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;
-    font-size: 12px; line-height: 1.5; padding: 10px;
-  }
-  .loop-card strong { font-size: 22px; line-height: 1; margin-bottom: 6px; }
-
   /* 输入 */
   textarea, input[type=text], input[type=number] {
     width: 100%;
@@ -407,7 +399,7 @@
     <div class="image-sequence" id="imageSequence" hidden>
       <div class="sequence-head">
         <b>播放顺序</b>
-        <span id="sequenceHint">第 1 张为首页；多图成片结尾自动回到首页</span>
+        <span id="sequenceHint">按选择顺序播放，每张平均分配音频时长</span>
       </div>
       <div class="thumb-list" id="thumbList"></div>
     </div>
@@ -459,13 +451,7 @@
         </span>
       </label>
       <label>输出分辨率
-        <span class="seg" id="resSeg">
-          <button data-auto="1" class="on">自动（按首图）</button>
-          <button data-w="1920" data-h="1080">横屏 1080p</button>
-          <button data-w="3840" data-h="2160">横屏 4K</button>
-          <button data-w="1280" data-h="720">横屏 720p</button>
-        </span>
-        <span class="hint2">默认使用第 1 张图片的长宽；手动选项可覆盖</span>
+        <span class="hint2">固定横屏 1920×1080（1080p）；竖图完整显示在横屏画布中，MP4 文件大小不设上限</span>
       </label>
       <label>字幕字号 px<span class="counter" style="position:static;background:transparent;padding:0;margin-left:8px;font-weight:400;">默认 30，小于副标题 52</span>
         <input type="number" id="fontSize" value="30" min="24" max="72">
@@ -603,15 +589,9 @@ function renderThumbnails() {
       '<div class="thumb-info"><span class="thumb-no">' + (index + 1) + '</span><span class="thumb-name" title="' + escapeHtml(file.name) + '">' + escapeHtml(file.name) + '</span></div>';
     box.appendChild(card);
   });
-  if (state.images.length > 1) {
-    const loop = document.createElement('div');
-    loop.className = 'loop-card';
-    loop.innerHTML = '<strong>↩︎ 1</strong>结尾自动回到首页<br>形成首尾闭环';
-    box.appendChild(loop);
-  }
   $('sequenceHint').textContent = state.images.length > 1
-    ? '首页最多 3 秒，然后按顺序播放其余 ' + (state.images.length - 1) + ' 张，结尾再回到首页'
-    : '单图模式：整段视频保持第 1 张首页';
+    ? '共 ' + state.images.length + ' 张，按顺序各播放一次；每张平均分配音频时长'
+    : '单图模式：整段视频保持这一张图片';
 }
 
 $('thumbList').addEventListener('click', e => {
@@ -680,7 +660,7 @@ function toggleSubSettings() {
 }
 $('useSubtitle').addEventListener('change', toggleSubSettings);
 
-/* ---------- 实时预览（默认按首图尺寸，与后端排版一致） ---------- */
+/* ---------- 实时预览（固定横屏 1920×1080，与后端排版一致） ---------- */
 function splitTheme(theme) {
   const st = $('splitText').value.trim();
   if (st) {
@@ -719,21 +699,7 @@ function firstSentence(text) {
   return lines[0] || '';
 }
 function selectedOutputSize() {
-  const selected = document.querySelector('#resSeg button.on');
-  if (selected.dataset.auto === '1') {
-    const first = state.previewImgs[0];
-    if (first) {
-      const sourceW = first.naturalWidth || first.width;
-      const sourceH = first.naturalHeight || first.height;
-      return {
-        width: sourceW + sourceW % 2,
-        height: sourceH + sourceH % 2,
-        auto: true
-      };
-    }
-    return { width: 1920, height: 1080, auto: true };
-  }
-  return { width: Number(selected.dataset.w), height: Number(selected.dataset.h), auto: false };
+  return { width: 1920, height: 1080 };
 }
 function syncPreviewCanvasSize() {
   const cv = $('previewCanvas');
@@ -774,8 +740,8 @@ function drawPreview() {
   }
   tip.textContent = '正在预览第 ' + (state.activeImageIndex + 1) + ' / ' + state.images.length + ' 张' +
     (isHomepage ? '（首页）' : '（内容图）') + ' · 输出 ' + outputSize.width + '×' + outputSize.height +
-    (outputSize.auto ? '（按首图）' : '（手动）') + (state.images.length > 1 ? '；成片结尾自动回到首页' : '');
-  const mode = document.querySelector('#bgModeSeg button.on').dataset.v;
+    '（固定横屏）' + (state.images.length > 1 ? '；所有图片平均分配时长' : '');
+  const mode = img.height > img.width ? 'fit-blur' : document.querySelector('#bgModeSeg button.on').dataset.v;
   const s1 = Math.max(W / img.width, H / img.height);
   if (mode === 'fit-blur') {
     const off = document.createElement('canvas'); off.width = W; off.height = H;
@@ -894,14 +860,6 @@ genBtn.addEventListener('click', () => {
   fd.append('theme', $('theme').value.trim());
   fd.append('split_text', $('splitText').value.trim());
   fd.append('subtitle', $('subtitle').value.trim());
-  const outputSize = selectedOutputSize();
-  if (outputSize.auto) {
-    fd.append('size_mode', 'auto');
-  } else {
-    fd.append('size_mode', 'manual');
-    fd.append('width', outputSize.width);
-    fd.append('height', outputSize.height);
-  }
   fd.append('bg_mode', document.querySelector('#bgModeSeg button.on').dataset.v);
   if (!$('useSubtitle').checked || !scriptText) fd.append('no_subtitle', '1');
   fd.append('font_size', $('fontSize').value || '30');
